@@ -71,25 +71,35 @@ class LangFlowClient:
             log.warning("delete %s -> HTTP %s (ignored)", file_id, resp.status_code)
 
     def upload_file(self, path: Path) -> dict[str, Any]:
+        # Always upload under the canonical name "<file_name>.json" so LangFlow
+        # stores it as `file_name` (it strips the extension). Do NOT use
+        # path.name: the local source is the temp file "wbs.tmp.json" and
+        # LangFlow would otherwise store it as "wbs.tmp" instead of "wbs".
+        upload_name = f"{self.file_name}.json"
         with path.open("rb") as fh:
-            files = {"file": (path.name, fh, "application/json")}
+            files = {"file": (upload_name, fh, "application/json")}
             resp = self.session.post(self.files_url, files=files, timeout=self.timeout)
         self._check(resp, "upload file")
         return self._as_file_meta(resp.json())
 
+    def _is_managed(self, name: str) -> bool:
+        """Our canonical file, plus the '<name>.tmp' residue left by an older
+        version that uploaded the temp file under its own name."""
+        return name == self.file_name or name.startswith(f"{self.file_name}.tmp")
+
     def replace_file(self, path: Path) -> dict[str, Any]:
-        """Delete every file sharing our base name, then upload the new one.
+        """Delete every managed file (incl. any .tmp residue), then upload.
 
         Deleting *all* matches guards against leftover duplicates from a
         previously failed delete. Only the freshly uploaded file remains.
         """
-        matches = [f for f in self.list_files() if f.get("name") == self.file_name]
+        matches = [f for f in self.list_files() if self._is_managed(f.get("name") or "")]
         for f in matches:
             file_id = f.get("id")
             if file_id:
-                log.info("deleting old LangFlow file id=%s", file_id)
+                log.info("deleting old LangFlow file id=%s name=%s", file_id, f.get("name"))
                 self.delete_file(file_id)
 
         meta = self.upload_file(path)
-        log.info("uploaded %s -> %s", path.name, meta.get("path") or meta.get("id"))
+        log.info("uploaded as '%s' -> %s", self.file_name, meta.get("path") or meta.get("id"))
         return meta
