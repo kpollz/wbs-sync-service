@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Union
 
 from pydantic import BaseModel, ConfigDict
+
+# IDs from the WBS API may arrive as int or str depending on the source —
+# accept either. We don't use these ids downstream (the slim record drops them).
+IdValue = Union[int, str]
 
 
 class _NamedRef(BaseModel):
     """A nested {id, name} reference (e.g. workCategory, job)."""
 
     model_config = ConfigDict(extra="ignore")
-    id: Optional[str] = None
+    id: Optional[IdValue] = None
     name: Optional[str] = None
 
 
@@ -19,7 +23,7 @@ class WorkCode(BaseModel):
     """Full WBS record as returned by /api/works/search."""
 
     model_config = ConfigDict(extra="ignore")
-    id: Optional[str] = None
+    id: Optional[IdValue] = None
     name: Optional[str] = None
     code: Optional[str] = None
     description: Optional[str] = None
