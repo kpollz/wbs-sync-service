@@ -1,0 +1,15 @@
+services:
+  wbs-sync:
+    build: .
+    image: wbs-sync-service:latest
+    container_name: wbs-sync-service
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Force an absolute path inside the container that the volume maps below.
+      STATE_DIR: /app/data
+    volumes:
+      # Persist state.json, wbs.json (newest) and changelog.jsonl across restarts.
+      - ./data:/app/data
+    # Health is implicit: APScheduler keeps the process alive and logs each run.
