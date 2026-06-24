@@ -38,3 +38,21 @@ def test_to_slim_list_maps_all(workcode):
     records = [WorkCode(**workcode(id="1")), WorkCode(**workcode(id="2"))]
     slim = to_slim_list(records)
     assert len(slim) == 2
+
+
+def test_workcode_accepts_integer_ids(workcode):
+    """The WBS API returns ids as ints; they must parse without error."""
+    record = WorkCode(
+        **workcode(
+            id=123,
+            workCategory={"id": 456, "name": "Engineering"},
+            job={"id": 789, "name": "Designer"},
+        )
+    )
+    slim = to_slim(record)
+    assert record.id == 123
+    assert record.workCategory.id == 456
+    # slim flattens to names and drops ids entirely
+    assert slim.workCategory == "Engineering"
+    assert slim.job == "Designer"
+    assert not hasattr(slim, "id")
