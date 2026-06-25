@@ -2,12 +2,11 @@
 
 Flow per tick:
   1. fetch WBS -> transform to slim dicts
-  2. write candidate to a TEMP file
-  3. compare candidate vs the persisted 'newest' file (file-based change detection)
+  2. write candidate to a TEMP file (the temp file exists ONLY to compare)
+  3. compare candidate vs the persisted 'newest' file
      - unchanged -> delete temp, skip
-     - changed   -> compute diff, upload to LangFlow (with retry)
-  4. on success: promote temp -> newest (atomic), write changelog + state
-     on failure: delete temp, keep newest, write changelog + state (so next tick retries)
+     - changed   -> promote temp -> newest IMMEDIATELY, then upload to LangFlow
+  4. write changelog + state regardless of upload outcome
 
 Only one data file ever exists at rest (the 'newest'); the temp file is always cleaned up.
 """
@@ -108,45 +107,53 @@ def run_once(
         log.info("no change (hash=%s); skipping sync", new_hash[:12])
         return SyncResult(changed=False, record_count=len(new_dicts))
 
-    # 4. Changed (or forced): compute what changed, then upload with retry
+    # 4. Changed (or forced): promote temp -> newest IMMEDIATELY (newest always
+    #    reflects the latest data), then upload to LangFlow with retry.
     diff = change_detector.compute_diff(old_dicts, new_dicts)
+    os.replace(temp_path, newest_path)  # consumes the temp file; newest is now the new data
+
     outcome = _upload_with_retry(
-        langflow, temp_path, cfg.sync_max_retries, cfg.sync_retry_backoff
+        langflow, newest_path, cfg.sync_max_retries, cfg.sync_retry_backoff
     )
 
     ts = datetime.now(timezone.utc).isoformat()
     meta = outcome["meta"] or {}
-    entry = {
-        "ts": ts,
-        "status": "success" if outcome["success"] else "failed",
-        "forced": force,
-        "record_count": len(new_dicts),
-        "diff": diff,
-        "attempts": outcome["attempts"],
-        "max_retries": cfg.sync_max_retries,
-        "langflow_file_id": meta.get("id"),
-        "langflow_path": meta.get("path"),
-        "error": outcome["error"],
-    }
-    changelog.append(cfg.changelog_file, entry)
+    changelog.append(
+        cfg.changelog_file,
+        {
+            "ts": ts,
+            "status": "success" if outcome["success"] else "failed",
+            "forced": force,
+            "record_count": len(new_dicts),
+            "diff": diff,
+            "attempts": outcome["attempts"],
+            "max_retries": cfg.sync_max_retries,
+            "langflow_file_id": meta.get("id"),
+            "langflow_path": meta.get("path"),
+            "error": outcome["error"],
+        },
+    )
 
-    # 5. Finalize
+    # newest already holds the new data, so last_hash always advances.
+    # last_synced_at advances only on a successful upload.
+    prev = state_store.load(cfg.state_file)
+    state_store.save(
+        prev.model_copy(
+            update={
+                "last_hash": new_hash,
+                "last_synced_at": ts if outcome["success"] else prev.last_synced_at,
+                "last_attempted_at": ts,
+                "langflow_file_id": meta.get("id") or prev.langflow_file_id,
+                "langflow_path": meta.get("path") or prev.langflow_path,
+                "record_count": len(new_dicts),
+                "last_status": "success" if outcome["success"] else "failed",
+                "last_error": outcome["error"],
+            }
+        ),
+        cfg.state_file,
+    )
+
     if outcome["success"]:
-        # Promote candidate -> newest (atomic rename consumes the temp file).
-        os.replace(temp_path, newest_path)
-        state_store.save(
-            State(
-                last_hash=new_hash,
-                last_synced_at=ts,
-                last_attempted_at=ts,
-                langflow_file_id=meta.get("id"),
-                langflow_path=meta.get("path"),
-                record_count=len(new_dicts),
-                last_status="success",
-                last_error=None,
-            ),
-            cfg.state_file,
-        )
         log.info(
             "synced %d records to LangFlow (added=%d updated=%d removed=%d, attempts=%d)",
             len(new_dicts), diff["added"], diff["updated"], diff["removed"], outcome["attempts"],
@@ -159,19 +166,6 @@ def run_once(
             attempts=outcome["attempts"],
         )
 
-    # Failure: discard the candidate, leave newest untouched so the next tick retries.
-    temp_path.unlink(missing_ok=True)
-    prev = state_store.load(cfg.state_file)
-    state_store.save(
-        prev.model_copy(
-            update={
-                "last_attempted_at": ts,
-                "last_status": "failed",
-                "last_error": outcome["error"],
-            }
-        ),
-        cfg.state_file,
-    )
     log.error("upload failed after %d attempts: %s", outcome["attempts"], outcome["error"])
     return SyncResult(
         changed=True,

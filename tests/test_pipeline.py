@@ -93,19 +93,21 @@ def test_force_pushes_even_when_unchanged(make_settings, fake_wbs, fake_langflow
 # --- failure + retry ---
 
 
-def test_failure_keeps_newest_and_logs_failed(make_settings, fake_wbs, fake_langflow, workcode):
+def test_failure_advances_newest_and_logs_failed(make_settings, fake_wbs, fake_langflow, workcode):
+    # Per the chosen model: temp is only for compare; on change, newest is
+    # promoted immediately, regardless of upload outcome.
     settings = make_settings(sync_max_retries=1, sync_retry_backoff=0)
 
-    # Seed a successful prior sync (newest file + state hash = OLD).
+    # Seed a successful prior sync.
     run_once(
         settings=settings,
         wbs=fake_wbs(_records(workcode, ["WBS-001"])),
         langflow=fake_langflow(),
     )
     before = state_store.load(settings.state_file)
-    old_file_hash = change_detector.compute_hash(_read_newest(settings))
+    assert before.last_synced_at is not None
 
-    # Now data changes but the upload fails.
+    # Data changes but the upload fails.
     result = run_once(
         settings=settings,
         wbs=fake_wbs(_records(workcode, ["WBS-001", "WBS-002"])),
@@ -114,22 +116,38 @@ def test_failure_keeps_newest_and_logs_failed(make_settings, fake_wbs, fake_lang
 
     assert result.changed is True and result.uploaded is False
     assert result.attempts == 1
-    assert result.error is not None
 
-    # Newest file untouched (still old content) and temp cleaned up.
-    assert change_detector.compute_hash(_read_newest(settings)) == old_file_hash
+    # newest ADVANCED to the new data (2 records); temp cleaned up.
+    assert len(_read_newest(settings)) == 2
     assert not settings.temp_file.exists()
 
-    # State hash not advanced; status flagged failed.
+    # State hash advanced; status flagged failed; last_synced_at not bumped.
     after = state_store.load(settings.state_file)
-    assert after.last_hash == before.last_hash
+    assert after.last_hash == change_detector.compute_hash(_read_newest(settings))
     assert after.last_status == "failed"
     assert after.last_error is not None
+    assert after.last_synced_at == before.last_synced_at
 
-    # Changelog recorded the failure (diff shows the attempted change).
     entries = changelog.read(settings.changelog_file)
     assert entries[-1]["status"] == "failed"
     assert entries[-1]["diff"]["added"] == 1
+
+
+def test_no_autoretry_next_tick_after_failed_upload(
+    make_settings, fake_wbs, fake_langflow, workcode
+):
+    # newest already advanced, so a failed upload is NOT retried on the next
+    # tick unless the data changes again (use --force to re-push manually).
+    settings = make_settings(sync_max_retries=1, sync_retry_backoff=0)
+    lf = fake_langflow(fail=True)
+
+    run_once(settings=settings, wbs=fake_wbs(_records(workcode, ["WBS-001"])), langflow=lf)
+    assert lf.replace_calls == 1  # the (failed) upload attempt
+
+    # same data again -> no change -> no new upload attempt
+    result = run_once(settings=settings, wbs=fake_wbs(_records(workcode, ["WBS-001"])), langflow=lf)
+    assert result.changed is False
+    assert lf.replace_calls == 1  # unchanged
 
 
 def test_retry_succeeds_on_later_attempt(make_settings, fake_wbs, workcode):
