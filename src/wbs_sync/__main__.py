@@ -56,13 +56,11 @@ def main(argv: list[str] | None = None) -> int:
 
         result = run_once(force=args.force)
         logging.getLogger(__name__).info(
-            "done: changed=%s uploaded=%s records=%d",
-            result.changed,
-            result.uploaded,
-            result.record_count,
+            "done: targets=%d changed=%d uploaded=%d failed=%d removed=%d",
+            result.targets, result.changed, result.uploaded, result.failed, result.removed,
         )
-        # Exit non-zero only when a change was detected but the upload failed.
-        return 0 if (not result.changed or result.uploaded) else 1
+        # Exit non-zero if any target's upload failed.
+        return 0 if result.failed == 0 else 1
 
     from .scheduler import run_scheduler
 

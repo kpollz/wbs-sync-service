@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from wbs_sync.config import Settings
@@ -29,28 +31,48 @@ def make_workcode(**over) -> dict:
 
 
 class FakeWBS:
-    def __init__(self, records):
-        self._records = records
-        self.calls = 0
+    """In-memory WBS client: departments + centralized works + per-part profiles."""
 
-    def fetch_all(self):
-        self.calls += 1
-        return self._records
+    def __init__(self, departments=None, works=None, profiles=None):
+        self.departments = departments or []  # list[Department]
+        self.works = works or []  # list[WorkCode]
+        self.profiles = profiles or {}  # dict[department_name -> list[WorkCode]]
+
+    def fetch_departments(self):
+        return self.departments
+
+    def fetch_works(self):
+        return self.works
+
+    def fetch_work_profiles(self, department_name):
+        return self.profiles.get(department_name, [])
 
 
 class FakeLangFlow:
-    def __init__(self, meta=None, fail=False):
-        self.meta = meta or {"id": "file-1", "name": "wbs", "path": "USER/file-1.json", "size": 10}
-        self.fail = fail
-        self.replace_calls = 0
-        self.uploaded = []
+    """In-memory LangFlow client tracking uploaded filenames and deleted bases."""
 
-    def replace_file(self, path):
-        self.replace_calls += 1
-        self.uploaded.append(path)
+    def __init__(self, meta=None, fail=False):
+        self.meta = meta
+        self.fail = fail
+        self.replace_calls = []  # list of uploaded filenames
+        self.deleted_bases = []  # list of base names passed to delete_by_base
+        self._n = 0
+
+    def replace_file(self, path, filename):
+        self.replace_calls.append(filename)
         if self.fail:
             raise RuntimeError("upload failed")
-        return self.meta
+        self._n += 1
+        base = Path(filename).stem
+        return self.meta or {
+            "id": f"id-{self._n}",
+            "name": base,
+            "path": f"USER/id-{self._n}.json",
+            "size": 10,
+        }
+
+    def delete_by_base(self, base):
+        self.deleted_bases.append(base)
 
 
 @pytest.fixture

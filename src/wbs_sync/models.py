@@ -1,4 +1,4 @@
-"""Data models for WBS records, the slim (LangFlow) representation, and sync state."""
+"""Data models: WBS records, the slim (LangFlow) representation, departments, and sync state."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ class _NamedRef(BaseModel):
 
 
 class WorkCode(BaseModel):
-    """Full WBS record as returned by /api/works/search."""
+    """Full WBS record as returned by /api/works/search and /api/work-profiles."""
 
     model_config = ConfigDict(extra="ignore")
     id: Optional[IdValue] = None
@@ -36,6 +36,16 @@ class WorkCode(BaseModel):
     updatedBy: Optional[str] = None
     createdAt: Optional[str] = None
     updatedAt: Optional[str] = None
+
+
+class Department(BaseModel):
+    """A part/department from /api/departments (we only use `name`)."""
+
+    model_config = ConfigDict(extra="ignore")
+    id: Optional[IdValue] = None
+    code: Optional[str] = None
+    name: Optional[str] = None
+    createdDate: Optional[str] = None
 
 
 class WorkCodeSlim(BaseModel):
@@ -55,21 +65,30 @@ class WorkCodeSlim(BaseModel):
     job: Optional[str] = None
 
 
-class State(BaseModel):
-    """Persistent sync state, stored as data/state.json."""
+class TargetState(BaseModel):
+    """Per-target persistent state (one entry per sync target)."""
 
+    langflow_name: Optional[str] = None
     last_hash: Optional[str] = None
     last_synced_at: Optional[str] = None
     last_attempted_at: Optional[str] = None
     langflow_file_id: Optional[str] = None
     langflow_path: Optional[str] = None
     record_count: Optional[int] = None
-    last_status: Optional[str] = None  # "success" | "failed"
+    last_status: Optional[str] = None  # "success" | "failed" | "error"
     last_error: Optional[str] = None
 
 
+class State(BaseModel):
+    """Persistent sync state, stored as data/state.json (one target dict)."""
+
+    targets: dict[str, TargetState] = {}
+    last_run_at: Optional[str] = None
+    departments: list[str] = []  # audit: department names seen on the last run
+
+
 class SyncResult(BaseModel):
-    """Outcome of a single run_once() invocation."""
+    """Outcome of syncing a single target."""
 
     changed: bool
     record_count: int
@@ -77,3 +96,13 @@ class SyncResult(BaseModel):
     file_id: Optional[str] = None
     attempts: int = 0
     error: Optional[str] = None
+
+
+class RunResult(BaseModel):
+    """Aggregate outcome of one run_once() across all targets."""
+
+    targets: int = 0
+    changed: int = 0
+    uploaded: int = 0
+    failed: int = 0
+    removed: int = 0
