@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,6 +40,7 @@ class SyncTarget:
     key: str  # "default" | "part:<slug>"
     label: str  # human-readable (department name or "default")
     langflow_name: str  # base name on LangFlow (no extension)
+    subdir: str = ""  # "" for default (lives at state_dir root); slug for a part
 
     @property
     def filename(self) -> str:
@@ -51,7 +53,7 @@ def build_targets(cfg: Settings, wbs: WBSClient, departments: list[Department]) 
     targets: list[SyncTarget] = []
 
     if cfg.sync_default_enabled:
-        targets.append(SyncTarget("default", "default", base))
+        targets.append(SyncTarget("default", "default", base, subdir=""))
 
     ordered = sorted(departments, key=lambda d: d.name or "")
     slugs = naming.assign_slugs([d.name or "" for d in ordered])
@@ -62,9 +64,24 @@ def build_targets(cfg: Settings, wbs: WBSClient, departments: list[Department]) 
                 key=f"part:{slug}",
                 label=original,
                 langflow_name=f"{base}_{slug}",
+                subdir=slug,
             )
         )
     return targets
+
+
+def _target_paths(cfg: Settings, target: SyncTarget) -> tuple[Path, Path, Path]:
+    """(newest, temp, changelog) paths for a target.
+
+    Default target lives at state_dir root; each part lives in its own
+    state_dir/<slug>/ folder together with its own changelog.
+    """
+    base_dir = Path(cfg.state_dir) / target.subdir
+    return (
+        base_dir / f"{target.langflow_name}.json",       # newest
+        base_dir / f"{target.langflow_name}.tmp.json",   # temp (compare-only)
+        base_dir / "changelog.jsonl",                    # this target's changelog
+    )
 
 
 def _write_json_atomic(path: Path, data: list[dict[str, Any]]) -> None:
@@ -124,8 +141,7 @@ def _sync_one(
     state: State,
 ) -> SyncResult:
     """Sync a single target (fetch -> transform -> compare -> promote -> upload)."""
-    newest_path = cfg.data_path_for(target.langflow_name)
-    temp_path = cfg.temp_path_for(target.langflow_name)
+    newest_path, temp_path, changelog_path = _target_paths(cfg, target)
 
     records = fetch()
     slim = transformer.to_slim_list(records)
@@ -153,7 +169,7 @@ def _sync_one(
     ts = _now()
     meta = outcome["meta"] or {}
     changelog.append(
-        cfg.changelog_file,
+        changelog_path,
         {
             "ts": ts,
             "target": target.key,
@@ -233,7 +249,8 @@ def _cleanup_orphans(
         if key in current_part_keys:
             continue
         target_state = state.targets[key]
-        base = target_state.langflow_name or key.split(":", 1)[-1]
+        slug = key.split(":", 1)[-1]
+        base = target_state.langflow_name or slug
         try:
             langflow.delete_by_base(base)
         except Exception as exc:
@@ -248,9 +265,11 @@ def _cleanup_orphans(
                 "record_count": 0,
             },
         )
+        # Remove the part's local folder (its newest data + temp + its changelog).
+        shutil.rmtree(Path(cfg.state_dir) / slug, ignore_errors=True)
         del state.targets[key]
         removed += 1
-        log.info("[%s] department gone; deleted LangFlow file '%s'", key, base)
+        log.info("[%s] department gone; deleted LangFlow file + local folder", key)
     return removed
 
 

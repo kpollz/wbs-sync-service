@@ -57,16 +57,11 @@ class Settings(BaseSettings):
 
     @property
     def changelog_file(self) -> Path:
-        """Append-only JSONL changelog of real changes + upload outcomes."""
+        """Root changelog: default target's events + part-removal (orphan) events.
+
+        Per-part changelogs live inside each part's own folder (see pipeline._paths).
+        """
         return Path(self.state_dir) / "changelog.jsonl"
-
-    def data_path_for(self, langflow_name: str) -> Path:
-        """The 'newest' data file for a given target base name."""
-        return Path(self.state_dir) / f"{langflow_name}.json"
-
-    def temp_path_for(self, langflow_name: str) -> Path:
-        """Transient candidate file for a given target base name."""
-        return Path(self.state_dir) / f"{langflow_name}.tmp.json"
 
 
 @lru_cache

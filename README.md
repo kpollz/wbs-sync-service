@@ -65,7 +65,10 @@ Service đồng bộ dữ liệu **WBS (Work Breakdown Structure)** từ hệ th
 ```
 
 - **Retry**: upload fail → thử tối đa `SYNC_MAX_RETRIES` lần, backoff `SYNC_RETRY_BACKOFF * attempt` giây. Hết retry → dòng `failed`. Vì newest đã advance, **tick sau không tự retry** → re-push bằng `run-once --force`.
-- **Lọc theo Part**: `docker compose exec wbs-sync sh -c 'cat /app/data/changelog.jsonl | jq -c "select(.target==\"part:sales\")"'`
+- **Changelog per Part**: default target + sự kiện xóa Part (orphan) ghi ở `data/changelog.jsonl` (root); mỗi Part có changelog riêng ở `data/<slug>/changelog.jsonl`.
+  ```bash
+  docker compose exec wbs-sync cat /app/data/sales/changelog.jsonl   # changelog Part Sales
+  ```
 
 ---
 
@@ -171,7 +174,22 @@ docker compose logs -f
 docker compose exec wbs-sync python -m wbs_sync run-once --force
 ```
 
-`./data` mount ra host → persist `state.json`, các file newest (`<base>.json`, `<base>_<slug>.json`), và `changelog.jsonl`.
+`./data` mount ra host. Bố cục:
+
+```
+data/
+├── state.json                       # state per-target (dict)
+├── changelog.jsonl                  # default target + sự kiện xóa Part
+├── wbs_agent_knowledge.json         # file default (newest)
+├── sales/                           # folder từng Part (tên = slug)
+│   ├── wbs_agent_knowledge_sales.json
+│   └── changelog.jsonl              # changelog riêng của Part này
+└── it_ops/                          # "IT & Ops" → slug it_ops
+    ├── wbs_agent_knowledge_it_ops.json
+    └── changelog.jsonl
+```
+
+> File temp (`*.tmp.json`) chỉ tồn tại trong 1 tick rồi dọn (rename thành newest nếu đổi, hoặc xóa). Khi 1 Part bị xóa khỏi `/api/departments`, folder Part đó bị xóa sạch; sự kiện xóa ghi ở root `changelog.jsonl`.
 
 ### B. Local
 
@@ -203,7 +221,8 @@ src/wbs_sync/
   pipeline.py        SyncTarget + build_targets + _sync_one + orphan cleanup + run_once
   scheduler.py       APScheduler interval
   __main__.py        CLI: serve / run-once [--force]
-data/                state.json, <base>.json, <base>_<slug>.json, changelog.jsonl (gitignored)
+data/                state.json, changelog.jsonl (root/default) + <base>.json (default)
+                     + <slug>/ (mỗi Part: data + changelog riêng)  — gitignored
 tests/               pytest + requests-mock
 Dockerfile + docker-compose.yml (root)
 ```
